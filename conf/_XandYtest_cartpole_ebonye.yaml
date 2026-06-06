@@ -35,14 +35,14 @@ training:
 
 wandb:
     name: "new cartpole RoPE with lqr noise, added time embeddings, control, state, switch head, distance to goal embedding, cos_sin theta"
-    entity: "ebonyesmith-uc-berkeley-electrical-engineering-computer-" #"afrias5"
+    entity: "ediworkdev-university-of-california-merced" #"afrias5"
     project: "test"
 
 
 
 
 # dataset_filesfolder: "./dataset_pendulum" #Folder that stores all your pickle files and logging info
-dataset_filesfolder: "/data/esmith/Dataset_Cartpole_AIGymWithNoise_ICL_new_ranges_zero_dyn" #Folder that stores all your pickle files and logging info
+dataset_filesfolder: "./dataset_cartpole" #Folder that stores all your pickle files and logging info
 pickle_folder: "picklefolder"  # Subfolder of dataset_filesfolder that will have all your trainingpkl files
 pickle_folder_test: "picklefolder_test_indistr"  # Subfolder of dataset_filesfolder that will have all your test pkl files
 pickle_folder_test_outofdistr: "picklefolder_test_outofdistr"  # Subfolder of dataset_filesfolder that will have all your test pkl files

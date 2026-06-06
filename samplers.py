@@ -5,7 +5,7 @@ import torch
 import numpy as np
 # from workCon import checking 
 # from workCon_ebonye import checking 
-from workCon_linearsys import checking
+from workCon import checking
 # from workCon_cartpole import checking as checking_cartpole
 from workCon_cartpole_aigym import checking as checking_cartpole
 from workCon_acrobot_aigym import checking_acrobot
