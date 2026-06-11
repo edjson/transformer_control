@@ -1,16 +1,13 @@
 """
 eval_cartpole.py  —  N-trial evaluation harness for the transformer cartpole controller.
 
-Runs the trained controller over many dataset systems and logs per-episode stabilization
-metrics to a CSV. Imports the controller / physics / model loader from your viewer module
-(single source of truth — no duplicated get_control that can drift).
+Two modes (set GRID_SWEEP below):
+  GRID_SWEEP = True   -> sweep a GRID of (cart, pole, length) values, headless. Writes grid_results.csv.
+  GRID_SWEEP = False  -> sample N_SYSTEMS from the dataset pickle. Writes eval_results.csv.
 
-TWO RUN MODES (set RENDER below):
-    RENDER = False -> headless, fast. Use this for the real data sweep (all N systems).
-    RENDER = True  -> opens the pygame window and shows each episode WHILE logging metrics.
-                      Forces ~real-time, so it's a watch / spot-check mode: keep N_SYSTEMS
-                      small (3-5). Close the window (or press Q) to stop early; finished
-                      rows are kept.
+Imports the controller / physics / model loader from the viewer module (single source of truth).
+MAX_CONTEXT is pinned here (50 reproduces the 0/50 run). The CHECKPOINT comes from the viewer
+(load_model reads its CHECKPOINT_STEP -> set 225543 there to reproduce the result).
 
 RUN
     conda activate icl_ebonye_pendulum
@@ -22,10 +19,15 @@ import os
 import csv
 import math
 import time
+import itertools
 import contextlib
 import importlib
 import numpy as np
 import torch
+print(torch.__version__, torch.version.cuda)
+print("cuda available:", torch.cuda.is_available())
+print("device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+x = torch.randn(1000,1000).cuda(); print("gpu matmul ok:", (x@x).sum().item() is not None)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IMPORT CONTROLLER / PHYSICS / MODEL FROM YOUR VIEWER  (single source of truth)
@@ -34,26 +36,38 @@ import torch
 VIEWER_MODULE = "sim_2d_cartpole"
 
 V = importlib.import_module(VIEWER_MODULE)
-get_control = V.get_control          # the controller — imported, never re-copied
-rk4_step    = V.rk4_step             # integrator (uses the viewer's cartpole_dynamics internally)
-load_model  = V.load_model           # checkpoint loader
-draw        = V.draw                 # the viewer's HUD/renderer (used only when RENDER=True)
+get_control = V.get_control
+rk4_step    = V.rk4_step
+load_model  = V.load_model
+draw        = V.draw
 DEVICE      = V.DEVICE
 DT          = V.DT
-MAX_CONTEXT = V.MAX_CONTEXT
+
+MAX_CONTEXT = 50   # pinned here; 50 reproduces the 0/50 run. Change to sweep context length.
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODE
+# ═════════════════════════════════════════════════════════════════════════════
+GRID_SWEEP = True         # True = grid sweep (headless). False = sample from pickle.
+RENDER     = False        # only used when GRID_SWEEP=False. Grid mode is always headless.
+
+# --- GRID definition: (start, stop_INCLUSIVE, step) ---
+# Default = the IN-DISTRIBUTION box (cart 2-3, pole 1.1-2.0, len 1.6-2.1) = 11 x 10 x 6 = 660 systems.
+# This box is what already failed 0/50, so expect ~0/660. To find the WORKS->FAILS boundary,
+# widen pole/length DOWN into the light region, e.g. GRID_POLE = (0.2, 2.0, 0.1), GRID_LEN = (1.0, 2.1, 0.1).
+GRID_CART = (2.0, 3.0, 0.1)
+GRID_POLE = (1.1, 2.0, 0.1)
+GRID_LEN  = (1.6, 2.1, 0.1)
+GRID_CSV  = "grid_results.csv"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RUN MODE
-# ─────────────────────────────────────────────────────────────────────────────
-RENDER = True             # True = watch each episode (real-time, keep N_SYSTEMS small)
-                          # False = headless + fast (use for the full data sweep)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# DATASET MASSES  (CUDA-saved-pickle -> CPU fix baked in).  ⚠️ point at YOUR data.
+# DATASET (only used when GRID_SWEEP=False).  ⚠️ point at YOUR data.
 # ─────────────────────────────────────────────────────────────────────────────
 import pickle
 DATASET_BASE = "/home/ediso/transformer_control/dataset_cartpole"
 PICKLE_PATH  = os.path.join(DATASET_BASE, "picklefolder_test_indistr", "batch_test_0_1.pkl")
+N_SYSTEMS    = 50
+OUT_CSV      = "eval_results.csv"
 
 def load_dataset_masses(path):
     orig_load = torch.load
@@ -73,31 +87,42 @@ def load_dataset_masses(path):
     return cm, pm, pl
 
 # ═════════════════════════════════════════════════════════════════════════════
-# RESEARCH DECISIONS — THESE ARE YOURS. Defaults mirror your proposal; change deliberately.
+# SUCCESS CRITERION — yours. Defaults mirror the proposal.
 # ═════════════════════════════════════════════════════════════════════════════
-N_SYSTEMS   = 50          # how many dataset systems to evaluate (use 3-5 when RENDER=True)
-EPISODE_TIME = 25.0       # seconds cap per episode (must exceed swing-up time + the hold below)
-THETA0_OFFSET = 0.3       # initial angle = pi + this (rad), SAME for every system -> clean mass sweep
-
-SUCCESS_THETA_TOL    = math.radians(5.0)   # |angle from upright|  (proposal: +/-5 deg)
-SUCCESS_X_TOL        = 0.3                  # |cart position| m      (proposal: +/-0.3 m)
-SUCCESS_THETADOT_TOL = 0.5                  # rad/s — "settled", not just passing through vertical
-SUCCESS_HOLD_STEPS   = 500                  # consecutive steps (proposal: 500 timesteps = 12.5 s)
-
-TRACK_LIMIT = 4.0         # |cart position| failure bound
-FORCE_CLIP  = 50.0        # matches the viewer; the model itself tops out ~±15 N
-OUT_CSV     = "eval_results.csv"
+EPISODE_TIME = 25.0
+THETA0_OFFSET = 0.3
+SUCCESS_THETA_TOL    = math.radians(5.0)
+SUCCESS_X_TOL        = 0.3
+SUCCESS_THETADOT_TOL = 0.5
+SUCCESS_HOLD_STEPS   = 500
+TRACK_LIMIT = 4.0
+FORCE_CLIP  = 50.0
 # ═════════════════════════════════════════════════════════════════════════════
 
-_DEVNULL = open(os.devnull, "w")  # mutes get_control's per-step debug prints
+_DEVNULL = open(os.devnull, "w")
 
 
 def angle_from_upright(theta):
     return abs((theta + math.pi) % (2 * math.pi) - math.pi)
 
 
+def arange_inc(start, stop, step):
+    """Inclusive float range with clean rounding (avoids 1.7000000002 drift)."""
+    n = int(round((stop - start) / step)) + 1
+    return [round(start + i * step, 4) for i in range(max(n, 1))]
+
+
+def wilson_ci(k, n, z=1.96):
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    denom  = 1.0 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    half   = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+
+
 def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
-    """Run one episode for one system. Returns (metrics_dict, quit_flag)."""
     cm = torch.tensor(cartmass,   dtype=torch.float32).to(DEVICE)
     pm = torch.tensor(polemass,   dtype=torch.float32).to(DEVICE)
     pl = torch.tensor(polelength, dtype=torch.float32).to(DEVICE)
@@ -105,7 +130,6 @@ def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
     if render_ctx is not None:
         import pygame
         screen, font, clock = render_ctx
-        # make the viewer's HUD + pole-length render reflect THIS system
         V.CARTMASS, V.POLEMASS, V.POLELENGTH = cartmass, polemass, polelength
 
     theta0 = math.pi + THETA0_OFFSET
@@ -166,8 +190,8 @@ def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
         longest_run = max(longest_run, cur_run)
 
         if render_ctx is not None:
-            draw(screen, font, s, u, mode, step)     # draws HUD + pole, flips display
-            clock.tick(int(round(1.0 / DT)))         # pace to real time (40 Hz)
+            draw(screen, font, s, u, mode, step)
+            clock.tick(int(round(1.0 / DT)))
 
         if longest_run >= SUCCESS_HOLD_STEPS:
             outcome = "success"; break
@@ -194,28 +218,40 @@ def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
 
 
 def main():
+    print(f"device = {DEVICE}  |  GRID_SWEEP = {GRID_SWEEP}  |  MAX_CONTEXT = {MAX_CONTEXT}")
     model = load_model()
-    ds_cm, ds_pm, ds_pl = load_dataset_masses(PICKLE_PATH)
 
-    idxs = np.linspace(0, len(ds_cm) - 1, num=min(N_SYSTEMS, len(ds_cm)), dtype=int)
-
+    # Build the list of (cart, pole, length) systems to test, and pick the output file.
     render_ctx = None
-    if RENDER:
-        import pygame
-        pygame.init()
-        screen = pygame.display.set_mode((V.SCREEN_W, V.SCREEN_H))
-        pygame.display.set_caption("CartPole eval — watch mode (logging while you watch)")
-        font  = pygame.font.SysFont("Consolas", 20)
-        clock = pygame.time.Clock()
-        render_ctx = (screen, font, clock)
-        if len(idxs) > 6:
-            print(f"[note] RENDER=True runs at real time; {len(idxs)} systems will take a while. "
-                  f"Set N_SYSTEMS small to watch, or RENDER=False for the full sweep.")
+    if GRID_SWEEP:
+        carts = arange_inc(*GRID_CART)
+        poles = arange_inc(*GRID_POLE)
+        lens  = arange_inc(*GRID_LEN)
+        systems = [(c, p, l) for c, p, l in itertools.product(carts, poles, lens)]
+        out_csv = GRID_CSV
+        print(f"GRID SWEEP: {len(carts)} cart x {len(poles)} pole x {len(lens)} len "
+              f"= {len(systems)} systems  (headless)")
+        print(f"  cart : {carts[0]} .. {carts[-1]}")
+        print(f"  pole : {poles[0]} .. {poles[-1]}")
+        print(f"  len  : {lens[0]} .. {lens[-1]}")
+    else:
+        ds_cm, ds_pm, ds_pl = load_dataset_masses(PICKLE_PATH)
+        idxs = np.linspace(0, len(ds_cm) - 1, num=min(N_SYSTEMS, len(ds_cm)), dtype=int)
+        systems = [(float(ds_cm[i]), float(ds_pm[i]), float(ds_pl[i])) for i in idxs]
+        out_csv = OUT_CSV
+        if RENDER:
+            import pygame
+            pygame.init()
+            screen = pygame.display.set_mode((V.SCREEN_W, V.SCREEN_H))
+            pygame.display.set_caption("CartPole eval — watch mode")
+            font  = pygame.font.SysFont("Consolas", 20)
+            clock = pygame.time.Clock()
+            render_ctx = (screen, font, clock)
 
     budget_ms = 1000.0 * DT
-    print(f"\nControl period = {budget_ms:.1f} ms ({1.0/DT:.0f} Hz). Watch mean_infer_ms vs this.\n")
+    print(f"Control period = {budget_ms:.1f} ms ({1.0/DT:.0f} Hz).  Writing -> {out_csv}\n")
 
-    fields = ["system_idx", "cartmass", "polemass", "polelength",
+    fields = ["idx", "cartmass", "polemass", "polelength",
               "outcome", "success", "steps", "duration_s",
               "reached_upright", "time_to_upright_s",
               "longest_balance_steps", "longest_balance_s",
@@ -223,43 +259,50 @@ def main():
               "mean_infer_ms", "n_errors", "theta0_deg"]
 
     rows = []
+    t_start = time.time()
     try:
-        with open(OUT_CSV, "w", newline="") as f:
+        with open(out_csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
-            for trial, i in enumerate(idxs):
-                cm_i, pm_i, pl_i = float(ds_cm[i]), float(ds_pm[i]), float(ds_pl[i])
-                m, quit_flag = run_episode(cm_i, pm_i, pl_i, model, render_ctx)
-                row = {"system_idx": int(i), "cartmass": round(cm_i, 3),
-                       "polemass": round(pm_i, 3), "polelength": round(pl_i, 3), **m}
+            for trial, (c, p, l) in enumerate(systems):
+                m, quit_flag = run_episode(c, p, l, model, render_ctx)
+                row = {"idx": trial, "cartmass": round(c, 3),
+                       "polemass": round(p, 3), "polelength": round(l, 3), **m}
                 w.writerow(row); f.flush()
                 rows.append(row)
-                warn = "  [!! model errored every step]" if m["n_errors"] == m["steps"] else ""
-                print(f"[{trial+1:3d}/{len(idxs)}] sys#{int(i):4d} "
-                      f"cart={cm_i:4.2f} pole={pm_i:4.2f} len={pl_i:4.2f} -> "
-                      f"{m['outcome']:13s} | peak|θ|={m['peak_theta_dev_deg']:5.1f}° "
-                      f"peak|x|={m['peak_abs_x_m']:4.2f}m balance={m['longest_balance_s']:4.1f}s "
-                      f"infer={m['mean_infer_ms']:5.1f}ms{warn}")
+                # compact progress: every row in pickle mode, every 10th in grid mode
+                if (not GRID_SWEEP) or (trial % 10 == 0) or m["success"]:
+                    elapsed = time.time() - t_start
+                    print(f"[{trial+1:4d}/{len(systems)}] "
+                          f"cart={c:4.2f} pole={p:4.2f} len={l:4.2f} -> "
+                          f"{m['outcome']:13s} | peak|theta|={m['peak_theta_dev_deg']:5.1f} "
+                          f"peak|x|={m['peak_abs_x_m']:4.2f}m bal={m['longest_balance_s']:4.1f}s "
+                          f"({elapsed:5.0f}s elapsed)")
                 if quit_flag:
-                    print("window closed — stopping sweep."); break
+                    print("stopped early."); break
     except KeyboardInterrupt:
         print("\nInterrupted — partial results saved.")
-    finally:
-        if RENDER:
-            import pygame
-            pygame.quit()
+
+    if render_ctx is not None:
+        import pygame
+        pygame.quit()
 
     if rows:
         n = len(rows)
-        succ = sum(r["success"] for r in rows)
+        succ    = sum(r["success"] for r in rows)
         reached = sum(r["reached_upright"] for r in rows)
         mean_lat = float(np.mean([r["mean_infer_ms"] for r in rows]))
+        s_lo, s_hi = wilson_ci(succ, n)
+        r_lo, r_hi = wilson_ci(reached, n)
         print(f"\n=== summary ({n} systems) ===")
-        print(f"reached upright (any) : {reached}/{n} = {100*reached/n:.1f}%")
-        print(f"STABILIZED (held {SUCCESS_HOLD_STEPS} steps) : {succ}/{n} = {100*succ/n:.1f}%")
-        print(f"mean inference latency : {mean_lat:.1f} ms  (control period {budget_ms:.1f} ms"
-              f"{'  — OVER BUDGET' if mean_lat > budget_ms else ''})")
-        print(f"results written        : {OUT_CSV}")
+        print(f"reached upright (any) : {reached}/{n} = {100*reached/n:.1f}%   "
+              f"(95% Wilson CI {100*r_lo:.1f}-{100*r_hi:.1f}%)")
+        print(f"STABILIZED (held {SUCCESS_HOLD_STEPS}) : {succ}/{n} = {100*succ/n:.1f}%   "
+              f"(95% Wilson CI {100*s_lo:.1f}-{100*s_hi:.1f}%)")
+        print(f"mean inference latency : {mean_lat:.1f} ms (control period {budget_ms:.1f} ms)")
+        print(f"results written        : {os.path.abspath(out_csv)}")
+        if GRID_SWEEP:
+            print(f"\nTo see the boundary: pivot {out_csv} on polemass x polelength (success or peak_abs_x_m).")
 
 
 if __name__ == "__main__":

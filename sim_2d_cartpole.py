@@ -18,12 +18,12 @@ from eval import get_model_from_run
 MODEL_RUN_DIR = "./models"
 MODEL_NAME    = "cartpole_cos_sin_theta"
 MODEL_RUN_ID     = "aa341f9c-e23f-4077-a2bd-58eb6ab58058"
-CHECKPOINT_STEP  = 99000  #  "which trained model loaded"
+CHECKPOINT_STEP  =  225543  #  "which trained model loaded"
 CHECKPOINT_EPOCH = 1
 
-CARTMASS = 2.5 #KG
-POLEMASS = 1.5 #KG
-POLELENGTH = 1.85 #M
+CARTMASS = 2 #KG   2
+POLEMASS = 1.2 #KG   0.2
+POLELENGTH = 1.6 #M 1
 CART_WIDTH = 80
 CART_HEIGHT = 30
 
@@ -170,10 +170,7 @@ def draw(screen, font, state, u, mode, step):
 
     pygame.display.flip()
     
-def main():
-
-    global CARTMASS, POLEMASS, POLELENGTH
-    CARTMASS, POLEMASS, POLELENGTH = 2.0, 0.2, 1.0     
+def main():  
     print(f"Using masses: cart={CARTMASS}, pole={POLEMASS}, len={POLELENGTH}")
     cm = torch.tensor(CARTMASS, dtype=torch.float32).to(DEVICE)
     pm = torch.tensor(POLEMASS, dtype=torch.float32).to(DEVICE)
