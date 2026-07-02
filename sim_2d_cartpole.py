@@ -18,17 +18,22 @@ from eval import get_model_from_run
 MODEL_RUN_DIR = "./models"
 MODEL_NAME    = "cartpole_cos_sin_theta"
 MODEL_RUN_ID     = "aa341f9c-e23f-4077-a2bd-58eb6ab58058"
-CHECKPOINT_STEP  =  225543  #  "which trained model loaded"
+CHECKPOINT_STEP  = 99000  #  "which trained model loaded"
 CHECKPOINT_EPOCH = 1
 
-CARTMASS = 2 #KG   2
-POLEMASS = 1.2 #KG   0.2
-POLELENGTH = 1.6 #M 1
-CART_WIDTH = 80
-CART_HEIGHT = 30
+CARTMASS = 2.5 #KG
+POLEMASS = .127 #KG     .230 large   .127 medium
+POLELENGTH = 0.3365 #M  .6413 large     0.3365 medium
+CART_WIDTH = 0.15 #meters
+CART_HEIGHT = 0.05 #m
+
+RL_TRACK_LENGTH= 1 
+USEABLE_TRACK_LENGTH = 0.814
+TRACK_HALF = USEABLE_TRACK_LENGTH / 2
+
 
 STATES_SCALE  = [7.0, 8.0, 1.0, 1.0, 5.0] # x, x_dot, cos(theta), sin(theta), theta_dot
-CONTROL_SCALE = 15.0
+CONTROL_SCALE = 15
 
 DEVICE = ("cuda" if torch.cuda.is_available() else "cpu")   
 MAX_CONTEXT = 50 # "history"
@@ -38,7 +43,7 @@ TOTAL_TIME = 30
 SCREEN_W = 1280
 SCREEN_H = 720 
 CART_Y   = SCREEN_H // 2 + 80
-SCALE    = 120
+SCALE    = 1000
 
 def load_model():
     run_path = os.path.join(MODEL_RUN_DIR, MODEL_NAME, MODEL_RUN_ID)
@@ -49,6 +54,16 @@ def load_model():
     print("Model loaded successfully.")
     return model
 
+
+def enforce_track_limits(state, half_range):
+    x, x_dot, theta, theta_dot = state
+    if x > half_range:
+        x = torch.full_like(x, half_range)
+        x_dot = torch.clamp(x_dot, max=0.0)
+    elif x < - half_range:
+        x = torch.full_like(x, -half_range)
+        x_dot = torch.clamp(x_dot, min=0.0)
+    return torch.stack([x, x_dot, theta, theta_dot])
 
 #copied test12ebonye_cartpole_noscale_RoPE_zerodyn.py cartpole_dynamics
 def cartpole_dynamics(state, u, cartmass, polemass, polelength, g=9.81):
@@ -104,7 +119,7 @@ def get_control(model, state_history, control_history):
     return u, mode
 import pickle
 
-DATASET_BASE = "/home/ediso/transformer_control/dataset_cartpole"
+DATASET_BASE = "/home/edison/transformer_control/dataset_cartpole"
 PICKLE_PATH  = os.path.join(DATASET_BASE, "picklefolder_test_indistr", "batch_test_0_1.pkl")
 
 class CPU_Unpickler(pickle.Unpickler):
@@ -141,8 +156,19 @@ def draw(screen, font, state, u, mode, step):
     screen.fill((30, 30, 30))
     x, x_dot, theta, theta_dot = state
     pygame.draw.line(screen, (200, 200, 200), (0, CART_Y), (SCREEN_W, CART_Y), 2)
+
+    limit_px = int(TRACK_HALF * SCALE)
+    for sgn in (-1, 1):
+        lx = SCREEN_W // 2 + sgn * limit_px
+        pygame.draw.line(screen, (150, 60, 60), (lx, CART_Y - 45), (lx, CART_Y + 45), 3)
+    at_limit = abs(x) >= TRACK_HALF- 1e-6
+    cart_col = (240, 90, 90) if at_limit else (70, 140, 240)
+
+
     cart_x = int(SCREEN_W / 2 + x * SCALE)
-    cart_rect = pygame.Rect(cart_x - CART_WIDTH // 2, CART_Y - CART_HEIGHT // 2, CART_WIDTH, CART_HEIGHT)
+    cart_w_px = max(2, int(CART_WIDTH * SCALE))
+    cart_h_px = max(2, int(CART_HEIGHT * SCALE))
+    cart_rect = pygame.Rect(cart_x - cart_w_px // 2, CART_Y - cart_h_px // 2, cart_w_px, cart_h_px)
     pygame.draw.rect(screen, (70, 140, 240), cart_rect, border_radius=6)
     
     pole_len_px = int(POLELENGTH * SCALE)
@@ -170,7 +196,7 @@ def draw(screen, font, state, u, mode, step):
 
     pygame.display.flip()
     
-def main():  
+def main():    
     print(f"Using masses: cart={CARTMASS}, pole={POLEMASS}, len={POLELENGTH}")
     cm = torch.tensor(CARTMASS, dtype=torch.float32).to(DEVICE)
     pm = torch.tensor(POLEMASS, dtype=torch.float32).to(DEVICE)
@@ -217,6 +243,7 @@ def main():
 
         u_tensor = torch.tensor([u], dtype=torch.float32).to(DEVICE)
         state = rk4_step(state, u_tensor, DT, cm, pm, pl)
+        state = enforce_track_limits(state, TRACK_HALF)
         s = state.cpu().numpy().tolist()
         state_history.append(s)
         control_history.append([u, float(mode)])
@@ -226,15 +253,13 @@ def main():
 
         print(f"Step {step:3d} | x={s[0]:.3f} m | theta={math.degrees(s[2]):.1f} deg | u={u:.2f} N | mode={mode}")
 
-        if abs(s[0]) > 4.0:
-            print(f"[Step {step}] Cart out of bounds — resetting.")
-            theta0 = math.pi + np.random.uniform(-0.3, 0.3)
-            state  = torch.tensor([0.0, 0.0, theta0, 0.0], dtype=torch.float32).to(DEVICE)
-            state_history   = [[0.0, 0.0, theta0, 0.0]]
-            control_history = []
             
     pygame.quit()
     print("Simulation ended.")
 
 if __name__ == "__main__":
     main()
+
+
+
+    #no cetner bias neededdsa
