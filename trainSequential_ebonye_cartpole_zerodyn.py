@@ -92,8 +92,8 @@ def train_step(model, xs, ys, optimizer, loss_func, i, args, numtrainingsteps, b
     
 
     #scaling xs and ys for better training stability
-    states_scale = [7.0, 8.0, 1.0, 1.0, 5.0] # x, x_dot, cos(theta), sin(theta), theta_dot 2/22/2026
-    control_scale = 15.0
+    states_scale = [1.0, 2.0, 1.0, 1.0, 25.0] # x, x_dot, cos(theta), sin(theta), theta_dot 2/22/2026
+    control_scale = 10.0
     xs_scaled = xs / torch.tensor(states_scale, device=xs.device)
     # make replace theta with cos(theta) and sin(theta) for cartpole
     # cos_theta = torch.cos(xs[:, :, 2])

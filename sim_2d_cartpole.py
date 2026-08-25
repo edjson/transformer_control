@@ -17,13 +17,13 @@ from eval import get_model_from_run
 #config
 MODEL_RUN_DIR = "./models"
 MODEL_NAME    = "cartpole_cos_sin_theta"
-MODEL_RUN_ID     = "aa341f9c-e23f-4077-a2bd-58eb6ab58058"
-CHECKPOINT_STEP  = 99000  #  "which trained model loaded"
+MODEL_RUN_ID     = "44fa9c62-d298-4572-baf0-6d272aab0120"
+CHECKPOINT_STEP  = 216696  #  "which trained model loaded"
 CHECKPOINT_EPOCH = 1
 
-CARTMASS = 2.5 #KG
+CARTMASS = 0.57 #KG
 POLEMASS = .127 #KG     .230 large   .127 medium
-POLELENGTH = 0.3365 #M  .6413 large     0.3365 medium
+POLELENGTH = 0.1778 #M  .6413 large     0.3365 medium
 CART_WIDTH = 0.15 #meters
 CART_HEIGHT = 0.05 #m
 
@@ -32,8 +32,8 @@ USEABLE_TRACK_LENGTH = 0.814
 TRACK_HALF = USEABLE_TRACK_LENGTH / 2
 
 
-STATES_SCALE  = [7.0, 8.0, 1.0, 1.0, 5.0] # x, x_dot, cos(theta), sin(theta), theta_dot
-CONTROL_SCALE = 15
+STATES_SCALE  = [1.0, 2.0, 1.0, 1.0, 25.0] # x, x_dot, cos(theta), sin(theta), theta_dot
+CONTROL_SCALE = 10
 
 DEVICE = ("cuda" if torch.cuda.is_available() else "cpu")   
 MAX_CONTEXT = 50 # "history"
@@ -107,7 +107,7 @@ def get_control(model, state_history, control_history):
     with torch.no_grad():
         u_pred, _, flag_pred = model(xs_t, ys_t, inf="yes")
 
-    print(f"u_pred shape: {u_pred.shape}, raw u_pred[-1]: {u_pred[-1]}")
+    #print(f"u_pred shape: {u_pred.shape}, raw u_pred[-1]: {u_pred[-1]}")
 
     u_scaled = u_pred[0, -1, 0].item()
     u = u_scaled * CONTROL_SCALE
@@ -115,7 +115,7 @@ def get_control(model, state_history, control_history):
     mode_logits = flag_pred[0, -1]
     mode = torch.argmax(mode_logits).item() - 1
     mode = max(mode, 0)
-    print(u_pred.shape, flag_pred.shape) 
+    #print(u_pred.shape, flag_pred.shape) 
     return u, mode
 import pickle
 

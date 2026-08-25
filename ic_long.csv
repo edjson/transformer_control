@@ -1,0 +1,5 @@
+idx,cartmass,polemass,polelength,outcome,success,steps,duration_s,reached_upright,time_to_upright_s,longest_balance_steps,longest_balance_s,peak_theta_dev_deg,peak_abs_x_m,control_effort,mean_infer_ms,n_errors,theta0_deg
+0,0.57,0.23,0.33,timeout,0,1000,25.0,0,,0,0.0,179.71,0.375,53.391,14.92,0,122.7
+1,0.57,0.23,0.33,timeout,0,1000,25.0,0,,0,0.0,179.9,0.296,40.912,14.39,0,130.34
+2,0.57,0.23,0.33,timeout,0,1000,25.0,0,,0,0.0,179.96,0.276,38.218,13.66,0,137.98
+3,0.57,0.23,0.33,timeout,0,1000,25.0,0,,0,0.0,179.87,0.257,40.133,13.72,0,145.62

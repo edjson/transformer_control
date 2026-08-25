@@ -1,0 +1,2 @@
+idx,cartmass,polemass,polelength,outcome,success,steps,duration_s,reached_upright,time_to_upright_s,longest_balance_steps,longest_balance_s,peak_theta_dev_deg,peak_abs_x_m,control_effort,mean_infer_ms,n_errors,theta0_deg
+0,0.57,0.127,0.178,success,1,834,20.85,1,8.275,500,12.5,179.93,0.109,11.517,13.97,0,197.19

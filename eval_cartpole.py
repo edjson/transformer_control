@@ -1,3 +1,4 @@
+
 """
 eval_cartpole.py  —  N-trial evaluation harness for the transformer cartpole controller.
 
@@ -27,7 +28,8 @@ import torch
 print(torch.__version__, torch.version.cuda)
 print("cuda available:", torch.cuda.is_available())
 print("device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
-x = torch.randn(1000,1000).cuda(); print("gpu matmul ok:", (x@x).sum().item() is not None)
+if torch.cuda.is_available():
+    x = torch.randn(1000,1000).cuda(); print("gpu matmul ok:", (x@x).sum().item() is not None)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IMPORT CONTROLLER / PHYSICS / MODEL FROM YOUR VIEWER  (single source of truth)
@@ -55,19 +57,19 @@ RENDER     = False        # only used when GRID_SWEEP=False. Grid mode is always
 # Default = the IN-DISTRIBUTION box (cart 2-3, pole 1.1-2.0, len 1.6-2.1) = 11 x 10 x 6 = 660 systems.
 # This box is what already failed 0/50, so expect ~0/660. To find the WORKS->FAILS boundary,
 # widen pole/length DOWN into the light region, e.g. GRID_POLE = (0.2, 2.0, 0.1), GRID_LEN = (1.0, 2.1, 0.1).
-GRID_CART = (2.0, 3.0, 0.1)
-GRID_POLE = (1.1, 2.0, 0.1)
-GRID_LEN  = (1.6, 2.1, 0.1)
-GRID_CSV  = "grid_results.csv"
+GRID_CART = (0.57, 0.57, 0.05)
+GRID_POLE = (0.230, 0.230, 0.02)
+GRID_LEN  = (0.3302, 0.3302, 0.04)
+GRID_CSV  = "ic_long.csv"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATASET (only used when GRID_SWEEP=False).  ⚠️ point at YOUR data.
 # ─────────────────────────────────────────────────────────────────────────────
 import pickle
-DATASET_BASE = "/home/ediso/transformer_control/dataset_cartpole"
-PICKLE_PATH  = os.path.join(DATASET_BASE, "picklefolder_test_indistr", "batch_test_0_1.pkl")
+DATASET_BASE = "/data/etran52/transformer_control/dataset_cartpole"
+PICKLE_PATH  = os.path.join(DATASET_BASE, "picklefolder_test_outofdistr", "batch_test_0_1.pkl")
 N_SYSTEMS    = 50
-OUT_CSV      = "eval_results.csv"
+OUT_CSV      = "eval_results_ood.csv"
 
 def load_dataset_masses(path):
     orig_load = torch.load
@@ -91,11 +93,12 @@ def load_dataset_masses(path):
 # ═════════════════════════════════════════════════════════════════════════════
 EPISODE_TIME = 25.0
 THETA0_OFFSET = 0.3
+THETA0_OFFSETS = list(np.linspace(-1.0, 1.0, 16))
 SUCCESS_THETA_TOL    = math.radians(5.0)
 SUCCESS_X_TOL        = 0.3
 SUCCESS_THETADOT_TOL = 0.5
 SUCCESS_HOLD_STEPS   = 500
-TRACK_LIMIT = 4.0
+TRACK_LIMIT = 1e9
 FORCE_CLIP  = 50.0
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -122,7 +125,8 @@ def wilson_ci(k, n, z=1.96):
     return (max(0.0, center - half), min(1.0, center + half))
 
 
-def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
+def run_episode(cartmass, polemass, polelength, model, render_ctx=None, theta0_offset=THETA0_OFFSET):
+    theta0 = math.pi + theta0_offset
     cm = torch.tensor(cartmass,   dtype=torch.float32).to(DEVICE)
     pm = torch.tensor(polemass,   dtype=torch.float32).to(DEVICE)
     pl = torch.tensor(polelength, dtype=torch.float32).to(DEVICE)
@@ -132,7 +136,6 @@ def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
         screen, font, clock = render_ctx
         V.CARTMASS, V.POLEMASS, V.POLELENGTH = cartmass, polemass, polelength
 
-    theta0 = math.pi + THETA0_OFFSET
     state  = torch.tensor([0.0, 0.0, theta0, 0.0], dtype=torch.float32).to(DEVICE)
     state_history   = [[0.0, 0.0, theta0, 0.0]]
     control_history = []
@@ -164,7 +167,9 @@ def run_episode(cartmass, polemass, polelength, model, render_ctx=None):
         try:
             with contextlib.redirect_stdout(_DEVNULL):
                 u, mode = get_control(model, ctx_s, ctx_c)
-        except Exception:
+        except Exception as e:
+            if n_errors == 0:
+                print(f"[eval] inference error: {type(e).__name__}: {e}")
             u, mode = 0.0, 0
             n_errors += 1
         infer_ms.append((time.perf_counter() - t0) * 1e3)
@@ -227,7 +232,7 @@ def main():
         carts = arange_inc(*GRID_CART)
         poles = arange_inc(*GRID_POLE)
         lens  = arange_inc(*GRID_LEN)
-        systems = [(c, p, l) for c, p, l in itertools.product(carts, poles, lens)]
+        systems = [(c, p, l, t) for c, p, l, t in itertools.product(carts, poles, lens, THETA0_OFFSETS)]
         out_csv = GRID_CSV
         print(f"GRID SWEEP: {len(carts)} cart x {len(poles)} pole x {len(lens)} len "
               f"= {len(systems)} systems  (headless)")
@@ -237,7 +242,7 @@ def main():
     else:
         ds_cm, ds_pm, ds_pl = load_dataset_masses(PICKLE_PATH)
         idxs = np.linspace(0, len(ds_cm) - 1, num=min(N_SYSTEMS, len(ds_cm)), dtype=int)
-        systems = [(float(ds_cm[i]), float(ds_pm[i]), float(ds_pl[i])) for i in idxs]
+        systems = [(float(ds_cm[i]), float(ds_pm[i]), float(ds_pl[i]), THETA0_OFFSET) for i in idxs]
         out_csv = OUT_CSV
         if RENDER:
             import pygame
@@ -264,8 +269,8 @@ def main():
         with open(out_csv, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=fields)
             w.writeheader()
-            for trial, (c, p, l) in enumerate(systems):
-                m, quit_flag = run_episode(c, p, l, model, render_ctx)
+            for trial, (c, p, l, t) in enumerate(systems):
+                m, quit_flag = run_episode(c, p, l, model, render_ctx, t)
                 row = {"idx": trial, "cartmass": round(c, 3),
                        "polemass": round(p, 3), "polelength": round(l, 3), **m}
                 w.writerow(row); f.flush()
@@ -303,7 +308,6 @@ def main():
         print(f"results written        : {os.path.abspath(out_csv)}")
         if GRID_SWEEP:
             print(f"\nTo see the boundary: pivot {out_csv} on polemass x polelength (success or peak_abs_x_m).")
-
 
 if __name__ == "__main__":
     main()
