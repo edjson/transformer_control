@@ -100,3 +100,16 @@ visualize_training_data_linearsystem.ipynb
 # workCon_linearsys.py
 
 dataset_cartpole/
+*:Zone.Identifier
+models/
+dataset_cartpole/
+*.pkl
+*.pt
+plots/
+run_log.csv
+run.csv
+test.csv
+*grid_results*.csv
+ic_*.csv
+output_spreadsheet.xlsx
+__pycache__/
